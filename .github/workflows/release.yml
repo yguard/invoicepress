@@ -1,0 +1,139 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to publish, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  # The tag is the single source of truth for the GitHub Release version.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Validate tag and project version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag must use the format vMAJOR.MINOR.PATCH, for example v0.1.0: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          VERSION="${RELEASE_TAG#v}"
+          PROJECT_VERSION="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          with Path("pyproject.toml").open("rb") as file:
+              print(tomllib.load(file)["tool"]["poetry"]["version"])
+          PY
+          )"
+
+          if [[ "$VERSION" != "$PROJECT_VERSION" ]]; then
+            echo "Tag version ($VERSION) must match pyproject.toml version ($PROJECT_VERSION)." >&2
+            exit 1
+          fi
+
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: ${{ matrix.label }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+            platform: macos
+            source: dist/InvoicePress-macos.zip
+          - os: windows-latest
+            label: Windows
+            platform: windows
+            source: dist/InvoicePress-windows.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: python -m pip install "poetry>=1.8,<2.0"
+
+      - name: Build macOS package
+        if: runner.os == 'macOS'
+        run: make build-mac
+
+      - name: Build Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          poetry install --with dev
+          poetry run pyinstaller --name InvoicePress --noconfirm --clean --windowed --add-data "invoice_pdf_printer/assets;invoice_pdf_printer/assets" --hidden-import=fitz invoice_pdf_printer/__main__.py
+          Compress-Archive -Path "dist/InvoicePress/*" -DestinationPath "dist/InvoicePress-windows.zip" -Force
+
+      # Release files include the tag so downloads remain identifiable outside GitHub.
+      - name: Stage versioned release package
+        shell: bash
+        env:
+          RELEASE_ASSET: InvoicePress-${{ needs.validate.outputs.tag }}-${{ matrix.platform }}.zip
+        run: |
+          mkdir -p release-assets
+          cp "${{ matrix.source }}" "release-assets/$RELEASE_ASSET"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: InvoicePress-${{ needs.validate.outputs.tag }}-${{ matrix.platform }}.zip
+          path: release-assets/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - validate
+      - package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/*.zip \
+            --verify-tag \
+            --title "InvoicePress $VERSION" \
+            --generate-notes

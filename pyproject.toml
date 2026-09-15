@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "invoicepress"
+version = "0.1.0"
+description = "Cross-platform invoice PDF preview, imposition, and printing tool."
+authors = ["wguard"]
+readme = "README.md"
+license = "MIT"
+packages = [{ include = "invoice_pdf_printer" }]
+include = ["invoice_pdf_printer/assets/*.svg"]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.14"
+PyMuPDF = ">=1.24"
+PySide6-Essentials = ">=6.7"
+
+[tool.poetry.group.dev.dependencies]
+pyinstaller = ">=6.0,<7.0"
+
+[tool.poetry.scripts]
+invoicepress = "invoice_pdf_printer.app:main"
+invoice-pdf-printer = "invoice_pdf_printer.app:main"
+pdf-impose = "invoice_pdf_printer.cli:main"
+pdf-2up-portrait = "invoice_pdf_printer.cli:main"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
