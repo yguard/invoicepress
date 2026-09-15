@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "invoicepress"
-version = "0.1.0"
+version = "1.0.0"
 description = "Cross-platform invoice PDF preview, imposition, and printing tool."
 authors = ["wguard"]
 readme = "README.md"

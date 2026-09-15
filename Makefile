@@ -2,7 +2,8 @@ APP_NAME := InvoicePress
 ENTRYPOINT := invoice_pdf_printer/__main__.py
 ASSET_SRC := invoice_pdf_printer/assets
 ASSET_DST := invoice_pdf_printer/assets
-VERSION ?= v0.1.0
+VERSION ?= v1.0.0
+RELEASE_NOTES ?= .github/release-notes/$(VERSION).md
 
 POETRY := poetry
 PYINSTALLER := $(POETRY) run pyinstaller
@@ -33,8 +34,8 @@ help:
 	@echo "  make build            Dispatch to build-mac on macOS or build-windows on Windows"
 	@echo "  make clean            Remove build artifacts"
 	@echo "  make verify           Run lightweight project checks"
-	@echo "  make release-tag VERSION=v0.1.0"
-	@echo "                          Create and push a lowercase tag matching pyproject.toml to publish a GitHub Release"
+	@echo "  make release-tag VERSION=v1.0.0"
+	@echo "                          Publish using .github/release-notes/v1.0.0.md with Features, Fixes, and Other Changes"
 
 install:
 	$(POETRY) install --with dev
@@ -90,7 +91,7 @@ package-windows: build-windows
 release-tag:
 	@set -eu; \
 	if ! printf '%s\n' "$(VERSION)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$'; then \
-		echo "VERSION must use lowercase vMAJOR.MINOR.PATCH, for example v0.1.0." >&2; \
+		echo "VERSION must use lowercase vMAJOR.MINOR.PATCH, for example v1.0.0." >&2; \
 		exit 1; \
 	fi; \
 	project_version="$$($(POETRY) version --short)"; \
@@ -98,7 +99,17 @@ release-tag:
 		echo "VERSION $(VERSION) must match pyproject.toml version v$$project_version." >&2; \
 		exit 1; \
 	fi; \
-	git tag -a "$(VERSION)" -m "Release $(VERSION)"; \
+	if [ ! -f "$(RELEASE_NOTES)" ]; then \
+		echo "Release notes file is required: $(RELEASE_NOTES)" >&2; \
+		exit 1; \
+	fi; \
+	for heading in '## Features' '## Fixes' '## Other Changes'; do \
+		if ! grep -Fxq "$$heading" "$(RELEASE_NOTES)"; then \
+			echo "Release notes must include the heading: $$heading" >&2; \
+			exit 1; \
+		fi; \
+	done; \
+	git tag -a "$(VERSION)" -F "$(RELEASE_NOTES)"; \
 	git push origin "$(VERSION)"
 
 debug:
