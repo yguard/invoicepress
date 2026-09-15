@@ -1,22 +1,17 @@
 name: Build and Release
 
 on:
+  # Pushing a lowercase semantic-version tag is the only release request.
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing version tag to publish, for example v0.1.0"
-        required: true
-        type: string
 
 permissions:
   contents: write
 
 env:
-  # The tag is the single source of truth for the GitHub Release version.
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  # A tag push supplies the exact tag name, so no workflow input is required.
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   validate:
@@ -26,22 +21,32 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-
-      - name: Validate tag and project version
+      - name: Validate the release tag format
         id: version
         shell: bash
         run: |
           set -euo pipefail
 
+          # Reject ambiguous names before using the tag as the checkout ref and release identity.
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag must use the format vMAJOR.MINOR.PATCH, for example v0.1.0: $RELEASE_TAG" >&2
+            echo "Tag must use lowercase vMAJOR.MINOR.PATCH, for example v0.1.0: $RELEASE_TAG" >&2
             exit 1
           fi
 
-          VERSION="${RELEASE_TAG#v}"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Validate tag and project version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The source at the tagged commit must declare the same version as the downloadable release.
           PROJECT_VERSION="$(python - <<'PY'
           import tomllib
           from pathlib import Path
@@ -51,13 +56,10 @@ jobs:
           PY
           )"
 
-          if [[ "$VERSION" != "$PROJECT_VERSION" ]]; then
-            echo "Tag version ($VERSION) must match pyproject.toml version ($PROJECT_VERSION)." >&2
+          if [[ "${RELEASE_TAG#v}" != "$PROJECT_VERSION" ]]; then
+            echo "Tag version (${RELEASE_TAG#v}) must match pyproject.toml version ($PROJECT_VERSION)." >&2
             exit 1
           fi
-
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   package:
     name: ${{ matrix.label }}
@@ -76,11 +78,12 @@ jobs:
             source: dist/InvoicePress-windows.zip
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -99,17 +102,19 @@ jobs:
           poetry run pyinstaller --name InvoicePress --noconfirm --clean --windowed --add-data "invoice_pdf_printer/assets;invoice_pdf_printer/assets" --hidden-import=fitz invoice_pdf_printer/__main__.py
           Compress-Archive -Path "dist/InvoicePress/*" -DestinationPath "dist/InvoicePress-windows.zip" -Force
 
-      # Release files include the tag so downloads remain identifiable outside GitHub.
       - name: Stage versioned release package
         shell: bash
         env:
           RELEASE_ASSET: InvoicePress-${{ needs.validate.outputs.tag }}-${{ matrix.platform }}.zip
         run: |
+          set -euo pipefail
+
+          # Versioned names keep downloaded files identifiable after leaving the Actions run.
           mkdir -p release-assets
           cp "${{ matrix.source }}" "release-assets/$RELEASE_ASSET"
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: InvoicePress-${{ needs.validate.outputs.tag }}-${{ matrix.platform }}.zip
           path: release-assets/*.zip
@@ -122,7 +127,7 @@ jobs:
       - package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
@@ -132,8 +137,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
         run: |
-          gh release create "$RELEASE_TAG" release-assets/*.zip \
-            --verify-tag \
-            --title "InvoicePress $VERSION" \
-            --generate-notes
+          set -euo pipefail
+
+          # Fail before creating an empty release if artifact retention, naming, or an earlier job regressed.
+          shopt -s nullglob
+          assets=(release-assets/*.zip)
+          if (( ${#assets[@]} != 2 )); then
+            echo "Expected exactly two release archives, found ${#assets[@]}." >&2
+            exit 1
+          fi
+
+          # Re-runs replace same-named assets rather than failing after the GitHub Release already exists.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --verify-tag \
+              --title "InvoicePress $VERSION" \
+              --generate-notes
+          fi

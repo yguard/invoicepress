@@ -34,7 +34,7 @@ help:
 	@echo "  make clean            Remove build artifacts"
 	@echo "  make verify           Run lightweight project checks"
 	@echo "  make release-tag VERSION=v0.1.0"
-	@echo "                          Create and push a Git tag that triggers GitHub Release packaging"
+	@echo "                          Create and push a lowercase tag matching pyproject.toml to publish a GitHub Release"
 
 install:
 	$(POETRY) install --with dev
@@ -88,8 +88,18 @@ package-mac: build-mac
 package-windows: build-windows
 
 release-tag:
-	git tag -a $(VERSION) -m "Release $(VERSION)"
-	git push origin $(VERSION)
+	@set -eu; \
+	if ! printf '%s\n' "$(VERSION)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$'; then \
+		echo "VERSION must use lowercase vMAJOR.MINOR.PATCH, for example v0.1.0." >&2; \
+		exit 1; \
+	fi; \
+	project_version="$$($(POETRY) version --short)"; \
+	if [ "$(VERSION)" != "v$$project_version" ]; then \
+		echo "VERSION $(VERSION) must match pyproject.toml version v$$project_version." >&2; \
+		exit 1; \
+	fi; \
+	git tag -a "$(VERSION)" -m "Release $(VERSION)"; \
+	git push origin "$(VERSION)"
 
 debug:
 	$(POETRY) run invoicepress
